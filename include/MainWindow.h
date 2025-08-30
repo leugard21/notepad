@@ -1,6 +1,9 @@
 #pragma once
+#include "EditorWidget.h"
 #include <QMainWindow>
 #include <QString>
+#include <QStringList>
+#include <QTabWidget>
 
 class EditorWidget;
 
@@ -21,19 +24,36 @@ private slots:
   void find();
   void findNext();
   void findPrev();
+  void openRecentFile();
+  void closeCurrentTab();
+  void newTab();
+
   void documentModified();
   void cursorPositionChanged();
+  void currentTabChanged(int index);
 
 private:
   void createMenus();
+  void rebuildRecentFilesMenu();
   void updateStatusBar();
   void highlightSearch(const QString &term);
-  bool maybeSave();
-  bool saveToPath(const QString &path);
-  bool loadFromPath(const QString &path);
+  bool maybeSave(EditorWidget *ed);
+  bool saveToPath(EditorWidget *ed, const QString &path);
+  bool loadFromPath(EditorWidget *ed, const QString &path);
 
-  EditorWidget *m_editor = nullptr;
+  EditorWidget *currentEditor() const;
+  void setTabTitle(EditorWidget *ed);
+
+  QTabWidget *m_tabs = nullptr;
+
+  QStringList m_recentFiles;
+  QAction *m_recentMenuAction = nullptr;
+  QMenu *m_recentMenu = nullptr;
+
+  const int kMaxRecent = 10;
+
   QString m_currentFile;
-  bool m_dirty = false;
   QString m_lastSearch;
+
+  bool m_dirty = false;
 };

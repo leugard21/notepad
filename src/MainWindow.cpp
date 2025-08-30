@@ -7,7 +7,9 @@
 #include <QInputDialog>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QSettings>
 #include <QStatusBar>
+#include <QTabWidget>
 #include <QTextBlock>
 #include <QTextStream>
 
@@ -15,15 +17,25 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
   setWindowTitle("Notepad");
   resize(900, 600);
 
-  m_editor = new EditorWidget(this);
-  setCentralWidget(m_editor);
+  m_tabs = new QTabWidget(this);
+  m_tabs->setDocumentMode(true);
+  m_tabs->setTabsClosable(true);
+  setCentralWidget(m_tabs);
 
-  connect(m_editor, &QPlainTextEdit::modificationChanged, this,
-          &MainWindow::documentModified);
-  connect(m_editor, &QPlainTextEdit::cursorPositionChanged, this,
-          &MainWindow::cursorPositionChanged);
+  connect(m_tabs, &QTabWidget::currentChanged, this,
+          &MainWindow::currentTabChanged);
+  connect(m_tabs, &QTabWidget::tabCloseRequested, this, [this](int idx) {
+    m_tabs->setCurrentIndex(idx);
+    closeCurrentTab();
+  });
 
   createMenus();
+
+  QSettings s;
+  m_recentFiles = s.value("recentFiles").toStringList();
+  rebuildRecentFilesMenu();
+
+  newTab();
   statusBar()->showMessage("Ready");
   updateStatusBar();
 }
@@ -38,40 +50,80 @@ void MainWindow::createMenus() {
   fileMenu->addAction("Save", this, &MainWindow::saveFile, QKeySequence::Save);
   fileMenu->addAction("Save As...", this, &MainWindow::saveFileAs,
                       QKeySequence::SaveAs);
+
+  m_recentMenu = fileMenu->addMenu("Recent Files");
+  m_recentMenuAction = m_recentMenu->menuAction();
+
   fileMenu->addSeparator();
+  fileMenu->addAction("Close Tab", this, &MainWindow::closeCurrentTab,
+                      QKeySequence("Ctrl+W"));
   fileMenu->addAction("Exit", this, &QWidget::close);
 
   // Edit
   QMenu *editMenu = menuBar()->addMenu("&Edit");
-  editMenu->addAction("Undo", m_editor, &QPlainTextEdit::undo,
-                      QKeySequence::Undo);
-  editMenu->addAction("Redo", m_editor, &QPlainTextEdit::redo,
-                      QKeySequence::Redo);
+  editMenu->addAction(
+      "Undo",
+      [this] {
+        if (currentEditor())
+          currentEditor()->undo();
+      },
+      QKeySequence::Undo);
+  editMenu->addAction(
+      "Redo",
+      [this] {
+        if (currentEditor())
+          currentEditor()->redo();
+      },
+      QKeySequence::Redo);
   editMenu->addSeparator();
-  editMenu->addAction("Cut", m_editor, &QPlainTextEdit::cut, QKeySequence::Cut);
-  editMenu->addAction("Copy", m_editor, &QPlainTextEdit::copy,
-                      QKeySequence::Copy);
-  editMenu->addAction("Paste", m_editor, &QPlainTextEdit::paste,
-                      QKeySequence::Paste);
+  editMenu->addAction(
+      "Cut",
+      [this] {
+        if (currentEditor())
+          currentEditor()->cut();
+      },
+      QKeySequence::Cut);
+  editMenu->addAction(
+      "Copy",
+      [this] {
+        if (currentEditor())
+          currentEditor()->copy();
+      },
+      QKeySequence::Copy);
+  editMenu->addAction(
+      "Paste",
+      [this] {
+        if (currentEditor())
+          currentEditor()->paste();
+      },
+      QKeySequence::Paste);
   editMenu->addSeparator();
-  editMenu->addAction("Select All", m_editor, &QPlainTextEdit::selectAll,
-                      QKeySequence::SelectAll);
+  editMenu->addAction(
+      "Select All",
+      [this] {
+        if (currentEditor())
+          currentEditor()->selectAll();
+      },
+      QKeySequence::SelectAll);
   editMenu->addSeparator();
   editMenu->addAction("Go to Line...", this, &MainWindow::goToLine,
                       QKeySequence("Ctrl+G"));
   editMenu->addAction("Find...", this, &MainWindow::find, QKeySequence::Find);
-  editMenu->addAction("Find Next...", this, &MainWindow::findNext,
+  editMenu->addAction("Find Next", this, &MainWindow::findNext,
                       QKeySequence::FindNext);
-  editMenu->addAction("Find Previous...", this, &MainWindow::findPrev,
+  editMenu->addAction("Find Previous", this, &MainWindow::findPrev,
                       QKeySequence::FindPrevious);
 
   // View
   QMenu *viewMenu = menuBar()->addMenu("&View");
   viewMenu->addAction("Toggle Word Wrap", [this] {
-    auto mode = m_editor->wordWrapMode() == QTextOption::NoWrap
+    auto ed = currentEditor();
+    if (!ed)
+      return;
+    auto mode = ed->wordWrapMode() == QTextOption::NoWrap
                     ? QTextOption::WordWrap
                     : QTextOption::NoWrap;
-    m_editor->setWordWrapMode(mode);
+    ed->setWordWrapMode(mode);
   });
 
   // Help
@@ -82,95 +134,207 @@ void MainWindow::createMenus() {
   });
 }
 
-void MainWindow::newFile() {
-  if (!maybeSave())
-    return;
-  m_editor->clear();
-  m_currentFile.clear();
-  m_dirty = false;
-  setWindowTitle("Notepad - Untitled");
+EditorWidget *MainWindow::currentEditor() const {
+  return qobject_cast<EditorWidget *>(m_tabs->currentWidget());
 }
 
-void MainWindow::openFile() {
-  if (!maybeSave())
+void MainWindow::setTabTitle(EditorWidget *ed) {
+  const bool modified = ed->document()->isModified();
+  QString name = ed->filePath().isEmpty()
+                     ? "Untitled"
+                     : QFileInfo(ed->filePath()).fileName();
+  if (modified)
+    name.prepend("*");
+  int idx = m_tabs->indexOf(ed);
+  if (idx >= 0)
+    m_tabs->setTabText(idx, name);
+  setWindowTitle(QString("NotepadX - %1").arg(name));
+}
+
+void MainWindow::newTab() {
+  auto *ed = new EditorWidget(this);
+  ed->setFilePath(QString());
+  ed->document()->setModified(false);
+
+  connect(ed, &QPlainTextEdit::modificationChanged, this,
+          &MainWindow::documentModified);
+  connect(ed, &QPlainTextEdit::cursorPositionChanged, this,
+          &MainWindow::cursorPositionChanged);
+
+  int idx = m_tabs->addTab(ed, "Untitled");
+  m_tabs->setCurrentIndex(idx);
+  setTabTitle(ed);
+}
+
+void MainWindow::closeCurrentTab() {
+  auto *ed = currentEditor();
+  if (!ed)
     return;
+  if (!maybeSave(ed))
+    return;
+
+  int idx = m_tabs->indexOf(ed);
+  m_tabs->removeTab(idx);
+  ed->deleteLater();
+
+  if (m_tabs->count() == 0) {
+    newTab();
+  }
+}
+
+void MainWindow::currentTabChanged(int) {
+  // Update title and status when switching
+  auto *ed = currentEditor();
+  if (!ed)
+    return;
+  setTabTitle(ed);
+  updateStatusBar();
+}
+
+void MainWindow::newFile() { newTab(); }
+
+void MainWindow::openFile() {
   QString path = QFileDialog::getOpenFileName(this, "Open File");
-  if (!path.isEmpty()) {
-    loadFromPath(path);
+  if (path.isEmpty())
+    return;
+
+  auto *ed = currentEditor();
+  if (!ed || !ed->toPlainText().isEmpty() || !ed->filePath().isEmpty()) {
+    newTab();
+    ed = currentEditor();
+  }
+  if (loadFromPath(ed, path)) {
+    // recent list
+    m_recentFiles.removeAll(path);
+    m_recentFiles.prepend(path);
+    while (m_recentFiles.size() > kMaxRecent)
+      m_recentFiles.removeLast();
+    rebuildRecentFilesMenu();
+    QSettings s;
+    s.setValue("recentFiles", m_recentFiles);
   }
 }
 
 bool MainWindow::saveFile() {
-  if (m_currentFile.isEmpty())
+  auto *ed = currentEditor();
+  if (!ed)
+    return false;
+  if (ed->filePath().isEmpty())
     return saveFileAs();
-  return saveToPath(m_currentFile);
+  return saveToPath(ed, ed->filePath());
 }
 
 bool MainWindow::saveFileAs() {
-  QString path = QFileDialog::getSaveFileName(this, "Save File As");
+  auto *ed = currentEditor();
+  if (!ed)
+    return false;
+  QString path = QFileDialog::getSaveFileName(
+      this, "Save File As",
+      ed->filePath().isEmpty() ? QString() : ed->filePath());
   if (path.isEmpty())
     return false;
-  return saveToPath(path);
+  return saveToPath(ed, path);
 }
 
-bool MainWindow::saveToPath(const QString &path) {
+bool MainWindow::saveToPath(EditorWidget *ed, const QString &path) {
   QFile file(path);
   if (!file.open(QFile::WriteOnly | QFile::Text)) {
     QMessageBox::warning(this, "Error", "Cannot save file.");
     return false;
   }
   QTextStream out(&file);
-  out << m_editor->toPlainText();
-  m_currentFile = path;
-  m_editor->document()->setModified(false);
-  m_dirty = false;
-  setWindowTitle(QString("Notepad - %1").arg(path));
+  out << ed->toPlainText();
+  ed->document()->setModified(false);
+  ed->setFilePath(path);
+  setTabTitle(ed);
   statusBar()->showMessage("Saved", 2000);
+
+  m_recentFiles.removeAll(path);
+  m_recentFiles.prepend(path);
+  while (m_recentFiles.size() > kMaxRecent)
+    m_recentFiles.removeLast();
+  rebuildRecentFilesMenu();
+  QSettings s;
+  s.setValue("recentFiles", m_recentFiles);
+
   return true;
 }
 
-bool MainWindow::loadFromPath(const QString &path) {
+bool MainWindow::loadFromPath(EditorWidget *ed, const QString &path) {
   QFile file(path);
   if (!file.open(QFile::ReadOnly | QFile::Text)) {
     QMessageBox::warning(this, "Error", "Cannot open file.");
     return false;
   }
   QTextStream in(&file);
-  m_editor->setPlainText(in.readAll());
-  m_currentFile = path;
-  m_editor->document()->setModified(false);
-  m_dirty = false;
-  setWindowTitle(QString("Notepad - %1").arg(path));
+  ed->setPlainText(in.readAll());
+  ed->document()->setModified(false);
+  ed->setFilePath(path);
+  setTabTitle(ed);
   statusBar()->showMessage("Opened", 2000);
   return true;
 }
 
-bool MainWindow::maybeSave() {
-  if (!m_editor->document()->isModified())
+bool MainWindow::maybeSave(EditorWidget *ed) {
+  if (!ed || !ed->document()->isModified())
     return true;
 
   auto ret = QMessageBox::warning(
-      this, "Notepad",
+      this, "NotepadX",
       "The document has been modified.\nDo you want to save your changes?",
       QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
 
   if (ret == QMessageBox::Save)
-    return saveFile();
+    return saveToPath(ed, ed->filePath().isEmpty()
+                              ? QFileDialog::getSaveFileName(this, "Save File")
+                              : ed->filePath());
   if (ret == QMessageBox::Cancel)
     return false;
   return true;
 }
 
+void MainWindow::rebuildRecentFilesMenu() {
+  m_recentMenu->clear();
+  if (m_recentFiles.isEmpty()) {
+    QAction *none = m_recentMenu->addAction("(empty)");
+    none->setEnabled(false);
+    return;
+  }
+  for (const QString &path : m_recentFiles) {
+    QAction *a = m_recentMenu->addAction(path);
+    connect(a, &QAction::triggered, this, &MainWindow::openRecentFile);
+  }
+}
+
+void MainWindow::openRecentFile() {
+  QAction *a = qobject_cast<QAction *>(sender());
+  if (!a)
+    return;
+  const QString path = a->text();
+  newTab();
+  auto *ed = currentEditor();
+  if (loadFromPath(ed, path)) {
+    m_recentFiles.removeAll(path);
+    m_recentFiles.prepend(path);
+    while (m_recentFiles.size() > kMaxRecent)
+      m_recentFiles.removeLast();
+    rebuildRecentFilesMenu();
+    QSettings s;
+    s.setValue("recentFiles", m_recentFiles);
+  }
+}
+
 void MainWindow::goToLine() {
   bool ok;
-  int maxLine = m_editor->document()->blockCount();
+  int maxLine = currentEditor()->document()->blockCount();
   int line = QInputDialog::getInt(this, "Go to Line",
                                   QString("Line number (1-%1):").arg(maxLine),
                                   1, 1, maxLine, 1, &ok);
   if (ok) {
-    QTextCursor cursor(m_editor->document()->findBlockByLineNumber(line - 1));
-    m_editor->setTextCursor(cursor);
-    m_editor->centerCursor();
+    QTextCursor cursor(
+        currentEditor()->document()->findBlockByLineNumber(line - 1));
+    currentEditor()->setTextCursor(cursor);
+    currentEditor()->centerCursor();
   }
 }
 
@@ -189,29 +353,29 @@ void MainWindow::find() {
 void MainWindow::findNext() {
   if (m_lastSearch.isEmpty())
     return;
-  if (!m_editor->find(m_lastSearch)) {
-    m_editor->moveCursor(QTextCursor::Start);
-    m_editor->find(m_lastSearch);
+  if (!currentEditor()->find(m_lastSearch)) {
+    currentEditor()->moveCursor(QTextCursor::Start);
+    currentEditor()->find(m_lastSearch);
   }
 }
 
 void MainWindow::findPrev() {
   if (m_lastSearch.isEmpty())
     return;
-  if (!m_editor->find(m_lastSearch, QTextDocument::FindBackward)) {
-    m_editor->moveCursor(QTextCursor::End);
-    m_editor->find(m_lastSearch, QTextDocument::FindBackward);
+  if (!currentEditor()->find(m_lastSearch, QTextDocument::FindBackward)) {
+    currentEditor()->moveCursor(QTextCursor::End);
+    currentEditor()->find(m_lastSearch, QTextDocument::FindBackward);
   }
 }
 
 void MainWindow::highlightSearch(const QString &term) {
   QList<QTextEdit::ExtraSelection> extraSelections;
   if (!term.isEmpty()) {
-    QTextCursor cursor(m_editor->document());
+    QTextCursor cursor(currentEditor()->document());
     QTextCharFormat fmt;
     fmt.setBackground(QBrush(Qt::blue).color());
     while (!cursor.isNull() && !cursor.atEnd()) {
-      cursor = m_editor->document()->find(term, cursor);
+      cursor = currentEditor()->document()->find(term, cursor);
       if (!cursor.isNull()) {
         QTextEdit::ExtraSelection sel;
         sel.cursor = cursor;
@@ -220,28 +384,39 @@ void MainWindow::highlightSearch(const QString &term) {
       }
     }
   }
-  m_editor->setExtraSelections(extraSelections);
+  currentEditor()->setExtraSelections(extraSelections);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
-  if (maybeSave())
-    event->accept();
-  else
-    event->ignore();
+  // Check all tabs
+  for (int i = 0; i < m_tabs->count(); ++i) {
+    auto *ed = qobject_cast<EditorWidget *>(m_tabs->widget(i));
+    if (!maybeSave(ed)) {
+      event->ignore();
+      return;
+    }
+  }
+  event->accept();
 }
 
 void MainWindow::documentModified() {
-  m_dirty = m_editor->document()->isModified();
-  setWindowTitle(
-      QString("Notepad%1 - %2")
-          .arg(m_dirty ? "*" : "")
-          .arg(m_currentFile.isEmpty() ? "Untitled" : m_currentFile));
+  auto *ed = qobject_cast<EditorWidget *>(sender());
+  if (!ed)
+    ed = currentEditor();
+  m_dirty = ed && ed->document()->isModified();
+  if (ed)
+    setTabTitle(ed);
 }
 
 void MainWindow::cursorPositionChanged() { updateStatusBar(); }
 
 void MainWindow::updateStatusBar() {
-  auto cursor = m_editor->textCursor();
+  auto *ed = currentEditor();
+  if (!ed) {
+    statusBar()->clearMessage();
+    return;
+  }
+  auto cursor = ed->textCursor();
   int line = cursor.blockNumber() + 1;
   int col = cursor.columnNumber() + 1;
   statusBar()->showMessage(
