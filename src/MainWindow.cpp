@@ -4,9 +4,11 @@
 #include <QCloseEvent>
 #include <QFile>
 #include <QFileDialog>
+#include <QInputDialog>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QStatusBar>
+#include <QTextBlock>
 #include <QTextStream>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
@@ -54,6 +56,14 @@ void MainWindow::createMenus() {
   editMenu->addSeparator();
   editMenu->addAction("Select All", m_editor, &QPlainTextEdit::selectAll,
                       QKeySequence::SelectAll);
+  editMenu->addSeparator();
+  editMenu->addAction("Go to Line...", this, &MainWindow::goToLine,
+                      QKeySequence("Ctrl+G"));
+  editMenu->addAction("Find...", this, &MainWindow::find, QKeySequence::Find);
+  editMenu->addAction("Find Next...", this, &MainWindow::findNext,
+                      QKeySequence::FindNext);
+  editMenu->addAction("Find Previous...", this, &MainWindow::findPrev,
+                      QKeySequence::FindPrevious);
 
   // View
   QMenu *viewMenu = menuBar()->addMenu("&View");
@@ -149,6 +159,68 @@ bool MainWindow::maybeSave() {
   if (ret == QMessageBox::Cancel)
     return false;
   return true;
+}
+
+void MainWindow::goToLine() {
+  bool ok;
+  int maxLine = m_editor->document()->blockCount();
+  int line = QInputDialog::getInt(this, "Go to Line",
+                                  QString("Line number (1-%1):").arg(maxLine),
+                                  1, 1, maxLine, 1, &ok);
+  if (ok) {
+    QTextCursor cursor(m_editor->document()->findBlockByLineNumber(line - 1));
+    m_editor->setTextCursor(cursor);
+    m_editor->centerCursor();
+  }
+}
+
+void MainWindow::find() {
+  bool ok;
+  QString term = QInputDialog::getText(
+      this, "Find", "Text to find:", QLineEdit::Normal, m_lastSearch, &ok);
+
+  if (ok && !term.isEmpty()) {
+    m_lastSearch = term;
+    findNext();
+    highlightSearch(term);
+  }
+}
+
+void MainWindow::findNext() {
+  if (m_lastSearch.isEmpty())
+    return;
+  if (!m_editor->find(m_lastSearch)) {
+    m_editor->moveCursor(QTextCursor::Start);
+    m_editor->find(m_lastSearch);
+  }
+}
+
+void MainWindow::findPrev() {
+  if (m_lastSearch.isEmpty())
+    return;
+  if (!m_editor->find(m_lastSearch, QTextDocument::FindBackward)) {
+    m_editor->moveCursor(QTextCursor::End);
+    m_editor->find(m_lastSearch, QTextDocument::FindBackward);
+  }
+}
+
+void MainWindow::highlightSearch(const QString &term) {
+  QList<QTextEdit::ExtraSelection> extraSelections;
+  if (!term.isEmpty()) {
+    QTextCursor cursor(m_editor->document());
+    QTextCharFormat fmt;
+    fmt.setBackground(QBrush(Qt::blue).color());
+    while (!cursor.isNull() && !cursor.atEnd()) {
+      cursor = m_editor->document()->find(term, cursor);
+      if (!cursor.isNull()) {
+        QTextEdit::ExtraSelection sel;
+        sel.cursor = cursor;
+        sel.format = fmt;
+        extraSelections.append(sel);
+      }
+    }
+  }
+  m_editor->setExtraSelections(extraSelections);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
