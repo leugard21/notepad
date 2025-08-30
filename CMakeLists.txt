@@ -19,6 +19,8 @@ qt_add_executable(notepad
   include/App.h
   include/MainWindow.h
   include/EditorWidget.h
+  src/Highlighter.cpp
+  include/Highlighter.h
 )
 
 target_include_directories(notepad PRIVATE include)

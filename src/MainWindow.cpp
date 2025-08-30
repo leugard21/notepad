@@ -1,6 +1,8 @@
 #include "MainWindow.h"
 #include "EditorWidget.h"
+#include "Highlighter.h"
 
+#include <QApplication>
 #include <QCloseEvent>
 #include <QFile>
 #include <QFileDialog>
@@ -9,6 +11,7 @@
 #include <QMessageBox>
 #include <QSettings>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTabWidget>
 #include <QTextBlock>
 #include <QTextStream>
@@ -31,6 +34,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
   createMenus();
 
+  applyTheme(isDarkTheme());
+
   QSettings s;
   m_recentFiles = s.value("recentFiles").toStringList();
   rebuildRecentFilesMenu();
@@ -38,6 +43,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
   newTab();
   statusBar()->showMessage("Ready");
   updateStatusBar();
+}
+
+static Highlighter::Lang langForPath(const QString &path) {
+  const QString ext = QFileInfo(path).suffix().toLower();
+  if (ext == "cpp" || ext == "cc" || ext == "cxx" || ext == "h" || ext == "hpp")
+    return Highlighter::Lang::Cpp;
+  if (ext == "json")
+    return Highlighter::Lang::Json;
+  if (ext == "md" || ext == "markdown")
+    return Highlighter::Lang::Markdown;
+  return Highlighter::Lang::None;
 }
 
 void MainWindow::createMenus() {
@@ -116,7 +132,7 @@ void MainWindow::createMenus() {
 
   // View
   QMenu *viewMenu = menuBar()->addMenu("&View");
-  viewMenu->addAction("Toggle Word Wrap", [this] {
+  auto *wrap = viewMenu->addAction("Toggle Word Wrap", [this] {
     auto ed = currentEditor();
     if (!ed)
       return;
@@ -125,6 +141,14 @@ void MainWindow::createMenus() {
                     : QTextOption::NoWrap;
     ed->setWordWrapMode(mode);
   });
+  wrap->setCheckable(true);
+  wrap->setChecked(false);
+
+  viewMenu->addSeparator();
+  auto *darkAct =
+      viewMenu->addAction("Dark Theme", this, &MainWindow::toggleDarkTheme);
+  darkAct->setCheckable(true);
+  darkAct->setChecked(isDarkTheme());
 
   // Help
   QMenu *helpMenu = menuBar()->addMenu("&Help");
@@ -155,6 +179,9 @@ void MainWindow::newTab() {
   auto *ed = new EditorWidget(this);
   ed->setFilePath(QString());
   ed->document()->setModified(false);
+
+  auto *hl = new Highlighter(ed->document());
+  hl->setLanguage(Highlighter::Lang::None);
 
   connect(ed, &QPlainTextEdit::modificationChanged, this,
           &MainWindow::documentModified);
@@ -249,6 +276,18 @@ bool MainWindow::saveToPath(EditorWidget *ed, const QString &path) {
   setTabTitle(ed);
   statusBar()->showMessage("Saved", 2000);
 
+  if (auto *hl = qobject_cast<Highlighter *>(
+          ed->document()->documentLayout()->parent())) {
+    // Not reliable; better: find child of document
+  }
+
+  for (QObject *child : ed->document()->children()) {
+    if (auto *hl = qobject_cast<Highlighter *>(child)) {
+      hl->setLanguage(langForPath(path));
+      break;
+    }
+  }
+
   m_recentFiles.removeAll(path);
   m_recentFiles.prepend(path);
   while (m_recentFiles.size() > kMaxRecent)
@@ -270,6 +309,19 @@ bool MainWindow::loadFromPath(EditorWidget *ed, const QString &path) {
   ed->setPlainText(in.readAll());
   ed->document()->setModified(false);
   ed->setFilePath(path);
+
+  if (auto *hl = qobject_cast<Highlighter *>(
+          ed->document()->documentLayout()->parent())) {
+    // Not reliable; better: find child of document
+  }
+
+  for (QObject *child : ed->document()->children()) {
+    if (auto *hl = qobject_cast<Highlighter *>(child)) {
+      hl->setLanguage(langForPath(path));
+      break;
+    }
+  }
+
   setTabTitle(ed);
   statusBar()->showMessage("Opened", 2000);
   return true;
@@ -421,4 +473,38 @@ void MainWindow::updateStatusBar() {
   int col = cursor.columnNumber() + 1;
   statusBar()->showMessage(
       QString("Ln %1, Col %2 | UTF-8 | LF").arg(line).arg(col));
+}
+
+bool MainWindow::isDarkTheme() const {
+  QSettings s;
+  return s.value("ui/darkTheme", false).toBool();
+}
+
+void MainWindow::applyTheme(bool dark) {
+  QPalette p;
+  if (dark) {
+    p = QPalette();
+    p.setColor(QPalette::Window, QColor(30, 30, 30));
+    p.setColor(QPalette::WindowText, Qt::white);
+    p.setColor(QPalette::Base, QColor(23, 23, 23));
+    p.setColor(QPalette::Text, Qt::white);
+    p.setColor(QPalette::Highlight, QColor(38, 79, 120));
+    p.setColor(QPalette::HighlightedText, Qt::white);
+  } else {
+    p = QApplication::style()->standardPalette();
+  }
+  QApplication::setPalette(p);
+
+  // Adjust current editors to follow palette (fonts/wrap remain)
+  for (int i = 0; i < m_tabs->count(); ++i) {
+    if (auto *ed = qobject_cast<EditorWidget *>(m_tabs->widget(i))) {
+      ed->setPalette(p);
+    }
+  }
+}
+
+void MainWindow::toggleDarkTheme(bool on) {
+  applyTheme(on);
+  QSettings s;
+  s.setValue("ui/darkTheme", on);
 }

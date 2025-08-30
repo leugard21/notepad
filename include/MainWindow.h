@@ -27,6 +27,7 @@ private slots:
   void openRecentFile();
   void closeCurrentTab();
   void newTab();
+  void toggleDarkTheme(bool on);
 
   void documentModified();
   void cursorPositionChanged();
@@ -56,4 +57,7 @@ private:
   QString m_lastSearch;
 
   bool m_dirty = false;
+
+  void applyTheme(bool dark);
+  bool isDarkTheme() const;
 };
